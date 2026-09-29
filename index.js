@@ -5,6 +5,8 @@ const app = express();
 
 app.use(express.json());
 const mongoose=require('mongoose');
+const category=require("./routes/categoryRouter");
+const user=require("./routes/userRouter");
 const mongoURI=process.env.mongodb_URL 
 
 mongoose.connect(mongoURI).then(() =>{
@@ -21,7 +23,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/category', category);
-
+app.use('/user', user);
 app.listen(4500, () => {
     console.log('Server running on port 4500');
 });
