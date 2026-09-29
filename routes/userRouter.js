@@ -24,7 +24,7 @@ router.post('/' ,async  (req,res) => {
     }
 });
 
-router.delete('/:id',async (req, res)=>{
+/*router.delete('/:id',async (req, res)=>{
     id=req.params.id
     try{
         const delCategory= await Category.findByIdAndDelete(id)
@@ -60,6 +60,6 @@ router.put('/:id', async (req, res) => {
             message: err.message
         });
     }
-});
+});*/
 
 module.exports=router;
