@@ -5,11 +5,12 @@ const userSchema=mongoose.Schema({
     Last_name:{type:String},
     Email:{type:String},
     Password:{type:String},
-    Mobile:{type:string},
-    role:{type:string,
-        enum:['customer','admin'],
-        default:'customer'
-    }
+    Mobile:{type:String},
+    role:{
+    type:String,
+    enum:['customer','admin'],
+    default:'customer'
+}
 });
 
 const User = mongoose.model('User', userSchema);
