@@ -13,7 +13,7 @@ mongoose.connect(mongoURI).then(() =>{
     console.log('connection established with MONGODB')
 }).catch((err)=>{console.log('connection Error ' +err)});
 
-const category=require("./routes/categoryRouter");
+
 
 
 
