@@ -15,9 +15,9 @@ const User=require('../models/userModel')
 
 router.post('/' ,async  (req,res) => {
     try{
-        const newCat=new Category(req.body);
+        const newUser=new User(req.body);
         //console.log(req.body)
-        const save= await newCat.save();
+        const save= await newUser.save();
         res.json(save);
     }catch(err){
         res.json({message:err.message})
