@@ -24,11 +24,14 @@ const userSchema = mongoose.Schema({
     }
 });
 
-dataSchema.pre('save', async function(next){
+userSchema.methods.comparePassword = function (plainPassword) {
+    return bcrypt.compare(plainPassword, this.Password);
+};
+
+userSchema.pre('save', async function(next){
     if(!this.isModified('password')){
         this.password = await bcrypt.hash(this.password, 10);
     }
-    next();
 });
 
 const User = mongoose.model('User', userSchema);

@@ -3,8 +3,18 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const User = require('../models/userModel');
 
+// REGISTER
 router.post('/', async (req, res) => {
     try {
+        // check if the email is already registered
+        const email = req.body['email'];
+        const user = await User.findOne({ email });
+        if (user) {
+            return res.status(409).json({
+                message: "You are already registered"
+            });
+        }
+
         // hash the password before saving
         const hashedPassword = await bcrypt.hash(req.body.Password, 10);
 
@@ -22,6 +32,34 @@ router.post('/', async (req, res) => {
     }
 });
 
+// LOGIN
+router.post('/login', async (req, res) => {
+    try {
+        const { email, Password } = req.body;
+
+        // find the user by email
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({
+                message: "Invalid email details"
+            });
+        }
+
+        // check the password using the method defined in the User schema
+        const isPassCorrect = await user.comparePassword(Password);
+        if (!isPassCorrect) {
+            return res.status(404).json({
+                message: "Invalid password details"
+            });
+        }
+
+        // don't send the password back to the client
+        const { Password: _removed, ...safeUser } = user.toObject();
+        res.json(safeUser);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
 
 // UPDATE user (only the fields sent)
 router.put('/:id', async (req, res) => {
@@ -50,6 +88,9 @@ router.put('/:id', async (req, res) => {
         if (err.name === 'CastError') {
             return res.status(400).json({ message: 'Invalid user id' });
         }
+        if (err.code === 11000) {
+            return res.status(409).json({ message: 'Email already in use' });
+        }
         res.status(500).json({ message: err.message });
     }
 });
@@ -71,6 +112,8 @@ router.delete('/:id', async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
+
+module.exports = router;
 
 /*router.get('/' ,async  (req,res) => {
     try{
@@ -129,6 +172,6 @@ router.put('/:id', async (req, res) => {
             message: err.message
         });
     }
-});*/
+});
 
-module.exports=router;
+module.exports=router;*/
