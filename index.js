@@ -14,10 +14,6 @@ mongoose.connect(mongoURI).then(() =>{
 }).catch((err)=>{console.log('connection Error ' +err)});
 
 
-
-
-
-
 app.get('/', (req, res) => {
     res.send('Welcome to the Category API');
 });
@@ -28,6 +24,9 @@ app.listen(4500, () => {
     console.log('Server running on port 4500');
 });
 */
+
+
+
 const express = require('express');
 require('dotenv').config();
 const mongoose = require('mongoose');

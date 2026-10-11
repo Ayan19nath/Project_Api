@@ -1,4 +1,5 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const User = require('../models/userModel');
@@ -27,7 +28,8 @@ router.post('/', async (req, res) => {
 
         const newUser = new User({
             ...req.body,
-            Password: hashedPassword
+            Password: hashedPassword,
+            role: 'customer'   // ignore any role sent by the client
         });
         const save = await newUser.save();
 
@@ -65,9 +67,26 @@ router.post('/login', async (req, res) => {
             });
         }
 
+        // create the token (inside the route, after `user` exists)
+        const token = jwt.sign(
+            {
+                id: user._id,
+                First_name: user.First_name,
+                Last_name: user.Last_name,
+                role: user.role
+            },
+            "2?u3,39M|/@,+{92,;?4yAPBH)^.=jY0*w@]Ru#AOj+",
+            { expiresIn: '1h' }
+        );
+
         // don't send the password back to the client
-        const { Password: _removed, ...safeUser } = user.toObject();
-        res.json(safeUser);
+       // const { Password: _removed, ...safeUser } = user.toObject();
+        res.json({
+            message: "Login successful",
+            token,
+            role: user.role,
+            //ser: safeUser
+        });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -77,6 +96,9 @@ router.post('/login', async (req, res) => {
 router.put('/:id', async (req, res) => {
     try {
         const updates = { ...req.body };
+
+        // role changes should only be done by an admin
+        delete updates.role;
 
         // re-hash the password only if a new one was sent
         if (updates.Password) {
@@ -126,6 +148,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
+
 
 /*router.get('/' ,async  (req,res) => {
     try{
