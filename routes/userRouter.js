@@ -1,14 +1,16 @@
-const express = require('express');
-const router = express.Router();
-const bcrypt = require('bcryptjs');
-const User = require('../models/userModel');
-
 // REGISTER
 router.post('/', async (req, res) => {
     try {
+        const { Email, Password } = req.body;
+
+        if (!Email || !Password) {
+            return res.status(400).json({
+                message: "Email and password are required"
+            });
+        }
+
         // check if the email is already registered
-        const email = req.body['email'];
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ Email });
         if (user) {
             return res.status(409).json({
                 message: "You are already registered"
@@ -16,7 +18,7 @@ router.post('/', async (req, res) => {
         }
 
         // hash the password before saving
-        const hashedPassword = await bcrypt.hash(req.body.Password, 10);
+        const hashedPassword = await bcrypt.hash(Password, 10);
 
         const newUser = new User({
             ...req.body,
@@ -25,7 +27,7 @@ router.post('/', async (req, res) => {
         const save = await newUser.save();
 
         // don't send the password back to the client
-        const { Password, ...safeUser } = save.toObject();
+        const { Password: _removed, ...safeUser } = save.toObject();
         res.status(201).json(safeUser);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -35,17 +37,22 @@ router.post('/', async (req, res) => {
 // LOGIN
 router.post('/login', async (req, res) => {
     try {
-        const { email, Password } = req.body;
+        const { Email, Password } = req.body;
 
-        // find the user by email
-        const user = await User.findOne({ email });
+        if (!Email || !Password) {
+            return res.status(400).json({
+                message: "Email and password are required"
+            });
+        }
+
+        // select('+Password') is needed because the schema hides it by default
+        const user = await User.findOne({ Email }).select('+Password');
         if (!user) {
             return res.status(404).json({
                 message: "Invalid email details"
             });
         }
 
-        // check the password using the method defined in the User schema
         const isPassCorrect = await user.comparePassword(Password);
         if (!isPassCorrect) {
             return res.status(404).json({
@@ -61,59 +68,6 @@ router.post('/login', async (req, res) => {
     }
 });
 
-// UPDATE user (only the fields sent)
-router.put('/:id', async (req, res) => {
-    try {
-        const updates = { ...req.body };
-
-        // re-hash the password only if a new one was sent
-        if (updates.Password) {
-            updates.Password = await bcrypt.hash(updates.Password, 10);
-        }
-
-        const updated = await User.findByIdAndUpdate(
-            req.params.id,
-            { $set: updates },
-            { new: true, runValidators: true }
-        );
-
-        if (!updated) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // don't send the password back to the client
-        const { Password, ...safeUser } = updated.toObject();
-        res.status(200).json(safeUser);
-    } catch (err) {
-        if (err.name === 'CastError') {
-            return res.status(400).json({ message: 'Invalid user id' });
-        }
-        if (err.code === 11000) {
-            return res.status(409).json({ message: 'Email already in use' });
-        }
-        res.status(500).json({ message: err.message });
-    }
-});
-
-// DELETE user
-router.delete('/:id', async (req, res) => {
-    try {
-        const deleted = await User.findByIdAndDelete(req.params.id);
-
-        if (!deleted) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        res.status(200).json({ message: 'User deleted successfully' });
-    } catch (err) {
-        if (err.name === 'CastError') {
-            return res.status(400).json({ message: 'Invalid user id' });
-        }
-        res.status(500).json({ message: err.message });
-    }
-});
-
-module.exports = router;
 
 /*router.get('/' ,async  (req,res) => {
     try{
