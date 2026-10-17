@@ -1,20 +1,19 @@
-const jwt=require('jsonwebtoken');
+const jwt = require('jsonwebtoken');
 
-function authenticate(req, res, next){
-    const token=req.headers('Authorization')?.split(' ')[1];
-    if(!token){
+function authenticate(req, res, next) {
+    const token = req.header('Authorization')?.split(' ')[1];
+    if (!token) {
         return res.status(401).json({
-            message:"Access denied. no token provided."
+            message: "Access denied. no token provided."
         });
     }
-    try{
-        const decoded=jwt.verify(token, "2?u3,39M|/@,+{92,;?4yAPBH)^.=jY0*w@]Ru#AOj+")
-        req.user=decoded;
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
         next();
-    }
-    catch(err){
+    } catch (err) {
         return res.status(401).json({
-            message:"Invalid token."
+            message: "Invalid token."
         });
     }
 }

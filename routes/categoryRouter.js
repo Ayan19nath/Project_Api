@@ -1,48 +1,51 @@
-const express=require('express');
-const router=express.Router();
-const Category=require('../models/categoryModel');
-const authenticate=require('../middleware/authenticate');
+const express = require('express');
+const router = express.Router();
+const Category = require('../models/categoryModel');
+const authenticate = require('../middleware/authenticate');
 
-router.get('/' ,async  (req,res) => {
-    try{
-    const allcategory =  await Category.find()
-    res.json(allcategory)
-    }catch(err){
-        res.json({
-        message:err.message})
-    }
-} );
-
-router.post('/' , authenticate, async  (req,res) => {
-    try{
-        const newCat=new Category(req.body);
-        //console.log(req.body)
-        const save= await newCat.save();
-        res.json(save);
-    }catch(err){
-        res.json({message:err.message})
+// GET all categories (public)
+router.get('/', async (req, res) => {
+    try {
+        const allcategory = await Category.find();
+        res.json(allcategory);
+    } catch (err) {
+        res.status(500).json({
+            message: err.message
+        });
     }
 });
 
-router.delete('/:id',async (req, res)=>{
-    id=req.params.id
-    try{
-        const delCategory= await Category.findByIdAndDelete(id)
-        if(!delCategory){
-            return res.status(400).json({
-                message:"Category details not found."
-            })
-        }else{
-            return res.json(delCategory);
+// CREATE category (login required)
+router.post('/', authenticate, async (req, res) => {
+    try {
+        const newCat = new Category(req.body);
+        const save = await newCat.save();
+        res.status(201).json(save);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// DELETE category (login required)
+router.delete('/:id', authenticate, async (req, res) => {
+    const id = req.params.id;
+    try {
+        const delCategory = await Category.findByIdAndDelete(id);
+        if (!delCategory) {
+            return res.status(404).json({
+                message: "Category details not found."
+            });
         }
-    }catch(err){
-        return res.json({
-            message:err.message
-        })
+        return res.json(delCategory);
+    } catch (err) {
+        return res.status(500).json({
+            message: err.message
+        });
     }
 });
 
-router.put('/:id', async (req, res) => {
+// UPDATE category (login required)
+router.put('/:id', authenticate, async (req, res) => {
     try {
         const updCategory = await Category.findByIdAndUpdate(
             req.params.id,
@@ -50,16 +53,16 @@ router.put('/:id', async (req, res) => {
             { new: true }
         );
         if (!updCategory) {
-            return res.json({
+            return res.status(404).json({
                 message: "Category not updated"
             });
         }
         return res.json(updCategory);
     } catch (err) {
-        return res.json({
+        return res.status(500).json({
             message: err.message
         });
     }
 });
 
-module.exports=router;
+module.exports = router;
