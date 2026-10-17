@@ -1,6 +1,7 @@
 const express=require('express');
-const router=express.Router()
-const Category=require('../models/categoryModel')
+const router=express.Router();
+const Category=require('../models/categoryModel');
+const authenticate=require('../middleware/authenticate');
 
 router.get('/' ,async  (req,res) => {
     try{
@@ -12,7 +13,7 @@ router.get('/' ,async  (req,res) => {
     }
 } );
 
-router.post('/' ,async  (req,res) => {
+router.post('/' , authenticate, async  (req,res) => {
     try{
         const newCat=new Category(req.body);
         //console.log(req.body)
