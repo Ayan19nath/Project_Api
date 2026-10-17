@@ -8,7 +8,7 @@ function authenticate(req, res, next) {
         });
     }
     try {
-        const decoded = jwt.verify(token, "2?u3,39M|/@,+{92,;?4yAPBH)^.=jY0*w@]Ru#AOj+");
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
         req.user = decoded;
         next();
     } catch (err) {
