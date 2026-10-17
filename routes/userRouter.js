@@ -67,7 +67,6 @@ router.post('/login', async (req, res) => {
             });
         }
 
-        // create the token (inside the route, after `user` exists)
         const token = jwt.sign(
             {
                 id: user._id,
@@ -75,17 +74,14 @@ router.post('/login', async (req, res) => {
                 Last_name: user.Last_name,
                 role: user.role
             },
-            "2?u3,39M|/@,+{92,;?4yAPBH)^.=jY0*w@]Ru#AOj+",
+            process.env.JWT_SECRET,   // must be the same value used in authenticate.js
             { expiresIn: '1h' }
         );
 
-        // don't send the password back to the client
-       // const { Password: _removed, ...safeUser } = user.toObject();
         res.json({
             message: "Login successful",
             token,
-            role: user.role,
-            //ser: safeUser
+            role: user.role
         });
     } catch (err) {
         res.status(500).json({ message: err.message });

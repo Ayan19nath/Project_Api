@@ -8,10 +8,11 @@ function authenticate(req, res, next) {
         });
     }
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = jwt.verify(token, "2?u3,39M|/@,+{92,;?4yAPBH)^.=jY0*w@]Ru#AOj+");
         req.user = decoded;
         next();
     } catch (err) {
+        console.log('JWT error:', err.message);   // remove this once it works
         return res.status(401).json({
             message: "Invalid token."
         });
