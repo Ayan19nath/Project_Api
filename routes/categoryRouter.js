@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Category = require('../models/categoryModel');
 const authenticate = require('../middleware/authenticate');
+const authorize = require('../middleware/authorize');
 
 // GET all categories (public)
 router.get('/', async (req, res) => {
@@ -16,7 +17,7 @@ router.get('/', async (req, res) => {
 });
 
 // CREATE category (login required)
-router.post('/', authenticate, async (req, res) => {
+router.post('/', authenticate, authorize('admin'), async (req, res) => {
     try {
         const newCat = new Category(req.body);
         const save = await newCat.save();
@@ -45,7 +46,7 @@ router.delete('/:id', authenticate, async (req, res) => {
 });
 
 // UPDATE category (login required)
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', authenticate,authorize('admin'), async (req, res) => {
     try {
         const updCategory = await Category.findByIdAndUpdate(
             req.params.id,
