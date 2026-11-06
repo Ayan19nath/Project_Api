@@ -6,4 +6,10 @@ const itemSchema=mongoose.Schema({
     description:{type:string},
     price:{type:number},
     imageUrl:{type:string},
-    cloudinary_id
+    cloudinaryId:{type:String},
+    category:{type:mongoose.Schema.Types.ObjectId,ref:'category'}
+},{timestamps:true});
+
+module.exports=mongoose.model("Item", itemSchema);
+
+
