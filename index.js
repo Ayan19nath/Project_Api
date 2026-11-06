@@ -38,6 +38,7 @@ app.get('/', (req, res) => {
 
 app.use('/category', category);
 app.use('/user', user);
+app.use('/item', item);
 
 // only listen when running locally (node index.js)
 if (require.main === module) {
