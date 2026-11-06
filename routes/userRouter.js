@@ -3,37 +3,56 @@ const jwt = require('jsonwebtoken');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const User = require('../models/userModel');
+const authenticate = require('../middleware/authenticate');
+const authorize = require('../middleware/authorize');
 
-// REGISTER
+// build the JWT (role must be inside it, authorize() reads req.user.role)
+function makeToken(user) {
+    return jwt.sign(
+        {
+            id: user._id,
+            First_name: user.First_name,
+            Last_name: user.Last_name,
+            role: user.role
+        },
+        process.env.JWT_SECRET,   // must be the same value used in authenticate.js
+        { expiresIn: '1h' }
+    );
+}
+
+// REGISTER (public, always creates a customer)
 router.post('/', async (req, res) => {
     try {
-        const { Email, Password } = req.body;
+        const { First_name, Last_name, Email, Password, Mobile } = req.body;
 
-        if (!Email || !Password) {
+        if (!First_name || !Email || !Password) {
             return res.status(400).json({
-                message: "Email and password are required"
+                message: "First name, email and password are required"
             });
         }
 
-        // check if the email is already registered
-        const user = await User.findOne({ Email });
+        const email = Email.toLowerCase().trim();
+
+        const user = await User.findOne({ Email: email });
         if (user) {
             return res.status(409).json({
                 message: "You are already registered"
             });
         }
 
-        // hash the password before saving
         const hashedPassword = await bcrypt.hash(Password, 10);
 
+        // only the allowed fields are taken from req.body
         const newUser = new User({
-            ...req.body,
+            First_name,
+            Last_name,
+            Email: email,
+            Mobile,
             Password: hashedPassword,
-            role: 'customer'   // ignore any role sent by the client
+            role: 'customer'
         });
         const save = await newUser.save();
 
-        // don't send the password back to the client
         const { Password: _removed, ...safeUser } = save.toObject();
         res.status(201).json(safeUser);
     } catch (err) {
@@ -41,7 +60,7 @@ router.post('/', async (req, res) => {
     }
 });
 
-// LOGIN
+// LOGIN (customers and admins)
 router.post('/login', async (req, res) => {
     try {
         const { Email, Password } = req.body;
@@ -53,34 +72,23 @@ router.post('/login', async (req, res) => {
         }
 
         // select('+Password') is needed because the schema hides it by default
-        const user = await User.findOne({ Email }).select('+Password');
+        const user = await User.findOne({
+            Email: Email.toLowerCase().trim()
+        }).select('+Password');
+
+        // same message for both cases so nobody can find out which emails exist
         if (!user) {
-            return res.status(404).json({
-                message: "Invalid email details"
-            });
+            return res.status(401).json({ message: "Invalid email or password" });
         }
 
         const isPassCorrect = await user.comparePassword(Password);
         if (!isPassCorrect) {
-            return res.status(404).json({
-                message: "Invalid password details"
-            });
+            return res.status(401).json({ message: "Invalid email or password" });
         }
-
-        const token = jwt.sign(
-            {
-                id: user._id,
-                First_name: user.First_name,
-                Last_name: user.Last_name,
-                role: user.role
-            },
-            process.env.JWT_SECRET,   // must be the same value used in authenticate.js
-            { expiresIn: '1h' }
-        );
 
         res.json({
             message: "Login successful",
-            token,
+            token: makeToken(user),
             role: user.role
         });
     } catch (err) {
@@ -88,13 +96,70 @@ router.post('/login', async (req, res) => {
     }
 });
 
-// UPDATE user (only the fields sent)
-router.put('/:id', async (req, res) => {
+// CREATE ADMIN (admin only: an existing admin creates another admin)
+router.post('/create-admin', authenticate, authorize('admin'), async (req, res) => {
     try {
+        const { First_name, Last_name, Email, Password, Mobile } = req.body;
+
+        if (!First_name || !Email || !Password) {
+            return res.status(400).json({
+                message: "First name, email and password are required"
+            });
+        }
+
+        const email = Email.toLowerCase().trim();
+
+        const exists = await User.findOne({ Email: email });
+        if (exists) {
+            return res.status(409).json({ message: "Email already registered" });
+        }
+
+        const admin = await User.create({
+            First_name,
+            Last_name,
+            Email: email,
+            Mobile,
+            Password: await bcrypt.hash(Password, 10),
+            role: 'admin'
+        });
+
+        const { Password: _removed, ...safeUser } = admin.toObject();
+        res.status(201).json(safeUser);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// GET ALL USERS (admin only, for the dashboard)
+router.get('/', authenticate, authorize('admin'), async (req, res) => {
+    try {
+        const users = await User.find().sort({ createdAt: -1 });
+        res.json(users);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// UPDATE user (the user themselves, or an admin)
+router.put('/:id', authenticate, async (req, res) => {
+    try {
+        const isAdmin = req.user.role === 'admin';
+        const isOwner = req.user.id === req.params.id;
+
+        if (!isAdmin && !isOwner) {
+            return res.status(403).json({
+                message: "You can only update your own account"
+            });
+        }
+
         const updates = { ...req.body };
 
-        // role changes should only be done by an admin
-        delete updates.role;
+        // only an admin may change a role
+        if (!isAdmin) delete updates.role;
+
+        if (updates.Email) {
+            updates.Email = updates.Email.toLowerCase().trim();
+        }
 
         // re-hash the password only if a new one was sent
         if (updates.Password) {
@@ -111,7 +176,6 @@ router.put('/:id', async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        // don't send the password back to the client
         const { Password, ...safeUser } = updated.toObject();
         res.status(200).json(safeUser);
     } catch (err) {
@@ -125,8 +189,8 @@ router.put('/:id', async (req, res) => {
     }
 });
 
-// DELETE user
-router.delete('/:id', async (req, res) => {
+// DELETE user (admin only)
+router.delete('/:id', authenticate, authorize('admin'), async (req, res) => {
     try {
         const deleted = await User.findByIdAndDelete(req.params.id);
 
@@ -144,65 +208,3 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
-
-
-/*router.get('/' ,async  (req,res) => {
-    try{
-    const allcategory =  await Category.find()
-    res.json(allcategory)
-    }catch(err){
-        res.json({
-        message:err.message})
-    }
-} );*/
-
-/*router.post('/' ,async  (req,res) => {
-    try{
-        const newUser=new User(req.body);
-        //console.log(req.body)
-        const save= await newUser.save();
-        res.json(save);
-    }catch(err){
-        res.json({message:err.message})
-    }
-});*/
-
-/*router.delete('/:id',async (req, res)=>{
-    id=req.params.id
-    try{
-        const delCategory= await Category.findByIdAndDelete(id)
-        if(!delCategory){
-            return res.status(400).json({
-                message:"Category details not found."
-            })
-        }else{
-            return res.json(delCategory);
-        }
-    }catch(err){
-        return res.json({
-            message:err.message
-        })
-    }
-});
-
-router.put('/:id', async (req, res) => {
-    try {
-        const updCategory = await Category.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            { new: true }
-        );
-        if (!updCategory) {
-            return res.json({
-                message: "Category not updated"
-            });
-        }
-        return res.json(updCategory);
-    } catch (err) {
-        return res.json({
-            message: err.message
-        });
-    }
-});
-
-module.exports=router;*/
