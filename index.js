@@ -3,6 +3,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const category = require('./routes/categoryRouter');
 const user = require('./routes/userRouter');
+const item = require('./routes/itemRouter');
 
 const app = express();
 app.use(express.json());
