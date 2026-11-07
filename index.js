@@ -1,11 +1,13 @@
 const express = require('express');
 require('dotenv').config();
 const mongoose = require('mongoose');
+const cors = require('cors'); // lets the React frontend call this API
 const category = require('./routes/categoryRouter');
 const user = require('./routes/userRouter');
 const item = require('./routes/itemRouter');
 
 const app = express();
+app.use(cors()); // must come before the routes
 app.use(express.json());
 
 const mongoURI = process.env.mongodb_URL;
@@ -37,6 +39,7 @@ app.get('/', (req, res) => {
     res.send('Welcome to the Category API');
 });
 
+// routes
 app.use('/category', category);
 app.use('/user', user);
 app.use('/item', item);
