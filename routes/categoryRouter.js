@@ -1,68 +1,43 @@
-const express = require('express');
-const router = express.Router();
+const router = require('express').Router();
 const Category = require('../models/categoryModel');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 
-// GET all categories (public)
+const admin = [authenticate, authorize('admin')];
+
 router.get('/', async (req, res) => {
     try {
-        const allcategory = await Category.find();
-        res.json(allcategory);
-    } catch (err) {
-        res.status(500).json({
-            message: err.message
-        });
-    }
-});
-
-// CREATE category (login required)
-router.post('/', authenticate, authorize('admin'), async (req, res) => {
-    try {
-        const newCat = new Category(req.body);
-        const save = await newCat.save();
-        res.status(201).json(save);
+        res.json(await Category.find());
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-// DELETE category (login required)
-router.delete('/:id', authenticate, async (req, res) => {
-    const id = req.params.id;
+router.post('/', admin, async (req, res) => {
     try {
-        const delCategory = await Category.findByIdAndDelete(id);
-        if (!delCategory) {
-            return res.status(404).json({
-                message: "Category details not found."
-            });
-        }
-        return res.json(delCategory);
+        res.status(201).json(await Category.create(req.body));
     } catch (err) {
-        return res.status(500).json({
-            message: err.message
-        });
+        res.status(400).json({ message: err.message });
     }
 });
 
-// UPDATE category (login required)
-router.put('/:id', authenticate,authorize('admin'), async (req, res) => {
+router.put('/:id', admin, async (req, res) => {
     try {
-        const updCategory = await Category.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            { new: true }
-        );
-        if (!updCategory) {
-            return res.status(404).json({
-                message: "Category not updated"
-            });
-        }
-        return res.json(updCategory);
+        const cat = await Category.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+        if (!cat) return res.status(404).json({ message: 'Category not found' });
+        res.json(cat);
     } catch (err) {
-        return res.status(500).json({
-            message: err.message
-        });
+        res.status(400).json({ message: err.message });
+    }
+});
+
+router.delete('/:id', admin, async (req, res) => {
+    try {
+        const cat = await Category.findByIdAndDelete(req.params.id);
+        if (!cat) return res.status(404).json({ message: 'Category not found' });
+        res.json({ message: 'Category deleted' });
+    } catch (err) {
+        res.status(400).json({ message: err.message });
     }
 });
 
