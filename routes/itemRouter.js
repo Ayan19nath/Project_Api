@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs');
 const router = express.Router();
 const Item = require('../models/itemModel');
 const cloudinary = require('../config/cloudinary');
@@ -6,91 +7,152 @@ const upload = require('../middleware/multer');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 
-// CREATE item
-router.post('/', upload.single('image'), async (req, res) => {
-    try {
-        if (!req.file) {
-            return res.status(400).json({ message: 'Image is required' });
-        }
-        const result = await cloudinary.uploader.upload(req.file.path);
-        const newItem = new Item({
-            title: req.body.title,
-            description: req.body.description,
-            price: req.body.price,
-            imageUrl: result.secure_url,
-            cloudinaryId: result.public_id,
-            category: req.body.category
-        });
-        const saved = await newItem.save();
-        res.status(201).json(saved);
-    } catch (err) {
-        res.status(400).json({ message: err.message });
-    }
+const admin = [authenticate, authorize('admin')];
+
+// Four image slots: Front, Back, Side, Detail
+const imageFields = upload.fields([0, 1, 2, 3].map((i) => ({ name: `image${i}`, maxCount: 1 })));
+
+// Shape of a product sent to the website
+const toClient = (item) => {
+    const o = item.toObject();
+    const old = o.oldPrice || 0;
+    return {
+        id: o._id,
+        name: o.name,
+        description: o.description,
+        brand: o.brand,
+        category: o.category?.cat_name || '',
+        categoryId: o.category?._id || o.category,
+        price: o.price,
+        oldPrice: old,
+        discount: old > o.price ? Math.round(((old - o.price) / old) * 100) : 0,
+        rating: o.rating,
+        reviews: o.reviews,
+        stock: o.stock,
+        features: o.features,
+        images: o.images.map((img) => img.url),
+        image: o.images[0]?.url || ''
+    };
+};
+
+// Text fields from the admin form
+const readFields = (b) => ({
+    name: b.name,
+    description: b.description,
+    brand: b.brand,
+    category: b.category,
+    price: b.price,
+    oldPrice: b.oldPrice || 0,
+    rating: b.rating || 0,
+    reviews: b.reviews || 0,
+    stock: b.stock || 0,
+    features: String(b.features || '').split(',').map((f) => f.trim()).filter(Boolean)
 });
 
-// GET all items (optional filter: /item?category=<categoryId>)
+// Delete the temporary upload files
+const cleanup = (req) =>
+    Object.values(req.files || {}).flat().forEach((f) => fs.unlink(f.path, () => {}));
+
+// Delete one image from Cloudinary
+const destroy = (img) =>
+    img.cloudinaryId ? cloudinary.uploader.destroy(img.cloudinaryId).catch(() => {}) : null;
+
+// Work out the new image list from the 4 slots.
+// next = images to keep, old = replaced or removed images (to delete from Cloudinary)
+async function applyImages(req, current = []) {
+    const files = req.files || {};
+    const removed = [].concat(req.body.removeImages || []).map(Number);
+    const next = [];
+    const old = [];
+
+    for (let i = 0; i < 4; i++) {
+        const file = files[`image${i}`]?.[0];
+        const existing = current[i];
+
+        if (file) {
+            const result = await cloudinary.uploader.upload(file.path, { folder: 'homehub/products' });
+            next.push({ url: result.secure_url, cloudinaryId: result.public_id });
+            if (existing) old.push(existing);
+        } else if (existing && !removed.includes(i)) {
+            next.push({ url: existing.url, cloudinaryId: existing.cloudinaryId });
+        } else if (existing) {
+            old.push(existing);
+        }
+    }
+    return { next, old };
+}
+
+// ========== GET ALL PRODUCTS (public) ==========
 router.get('/', async (req, res) => {
     try {
-        const filter = {};
-        if (req.query.category) filter.category = req.query.category;
-        const items = await Item.find(filter)
-            .populate('category')
-            .sort({ createdAt: -1 });
-        res.json(items);
+        const items = await Item.find().populate('category').sort('_id');
+        res.json(items.map((item) => toClient(item)));
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-// GET one item
+// ========== GET ONE PRODUCT (public) ==========
 router.get('/:id', async (req, res) => {
     try {
         const item = await Item.findById(req.params.id).populate('category');
-        if (!item) return res.status(404).json({ message: 'Item not found' });
-        res.json(item);
+        if (!item) return res.status(404).json({ message: 'Product not found' });
+        res.json(toClient(item));
+    } catch {
+        res.status(404).json({ message: 'Product not found' });
+    }
+});
+
+// ========== ADD PRODUCT (admin only) ==========
+router.post('/', admin, imageFields, async (req, res) => {
+    try {
+        if (!req.files?.image0) return res.status(400).json({ message: 'The first (Front) image is required' });
+
+        const { next } = await applyImages(req);
+        const item = await Item.create({ ...readFields(req.body), images: next });
+        res.status(201).json(toClient(await item.populate('category')));
+    } catch (err) {
+        res.status(400).json({ message: err.message });
+    } finally {
+        cleanup(req);
+    }
+});
+
+// ========== EDIT PRODUCT (admin only, images are optional) ==========
+router.put('/:id', admin, imageFields, async (req, res) => {
+    try {
+        const item = await Item.findById(req.params.id);
+        if (!item) return res.status(404).json({ message: 'Product not found' });
+
+        const { next, old } = await applyImages(req, item.images);
+        if (next.length === 0) return res.status(400).json({ message: 'A product needs at least one image' });
+
+        item.set({ ...readFields(req.body), images: next });
+        const saved = await item.save();
+
+        await Promise.all(old.map(destroy));
+        res.json(toClient(await saved.populate('category')));
+    } catch (err) {
+        res.status(400).json({ message: err.message });
+    } finally {
+        cleanup(req);
+    }
+});
+
+// ========== DELETE PRODUCT (admin only, also deletes its images) ==========
+router.delete('/:id', admin, async (req, res) => {
+    try {
+        const item = await Item.findByIdAndDelete(req.params.id);
+        if (!item) return res.status(404).json({ message: 'Product not found' });
+
+        await Promise.all(item.images.map(destroy));
+        res.json({ message: 'Product deleted' });
     } catch (err) {
         res.status(400).json({ message: err.message });
     }
 });
 
-// UPDATE item (image is optional)
-router.put('/:id', upload.single('image'), async (req, res) => {
-    try {
-        const item = await Item.findById(req.params.id);
-        if (!item) return res.status(404).json({ message: 'Item not found' });
-
-        // if a new image was sent, replace the old one on Cloudinary
-        if (req.file) {
-            await cloudinary.uploader.destroy(item.cloudinaryId);
-            const result = await cloudinary.uploader.upload(req.file.path);
-            item.imageUrl = result.secure_url;
-            item.cloudinaryId = result.public_id;
-        }
-
-        if (req.body.title !== undefined) item.title = req.body.title;
-        if (req.body.description !== undefined) item.description = req.body.description;
-        if (req.body.price !== undefined) item.price = req.body.price;
-        if (req.body.category !== undefined) item.category = req.body.category;
-
-        const updated = await item.save();
-        res.json(updated);
-    } catch (err) {
-        res.status(400).json({ message: err.message });
-    }
-});
-
-// DELETE item (also removes image from Cloudinary)
-router.delete('/:id', async (req, res) => {
-    try {
-        const item = await Item.findById(req.params.id);
-        if (!item) return res.status(404).json({ message: 'Item not found' });
-
-        await cloudinary.uploader.destroy(item.cloudinaryId);
-        await item.deleteOne();
-        res.json({ message: 'Item deleted' });
-    } catch (err) {
-        res.status(500).json({ message: err.message });
-    }
-});
+// Upload errors (wrong file type, file too big) are sent as a message
+router.use((err, req, res, next) => res.status(400).json({ message: err.message }));
 
 module.exports = router;
