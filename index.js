@@ -37,7 +37,7 @@ app.use(async (req, res, next) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Welcome to the Category API');
+    res.send('Welcome to the Project API');
 });
 
 // routes
