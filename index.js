@@ -5,6 +5,7 @@ const cors = require('cors'); // lets the React frontend call this API
 const category = require('./routes/categoryRouter');
 const user = require('./routes/userRouter');
 const item = require('./routes/itemRouter');
+const order = require('./routes/orderRouter');
 
 const app = express();
 app.use(cors()); // must come before the routes
@@ -43,6 +44,7 @@ app.get('/', (req, res) => {
 app.use('/category', category);
 app.use('/user', user);
 app.use('/item', item);
+app.use('/order', order);
 
 // only listen when running locally (node index.js)
 if (require.main === module) {
