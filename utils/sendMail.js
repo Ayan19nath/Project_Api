@@ -9,10 +9,10 @@ const call = async (path, body) => {
     if (!res.ok) throw new Error('Mail API failed');
 };
 
-// Plain email (used for admin requests)
-const sendMail = (to, subject, message) => call('/send', { to, subject, message });
+// Plain email. copy = true also sends a hidden copy to the official website inbox.
+const sendMail = (to, subject, message, copy = false) => call('/send', { to, subject, message, copy });
 
-// Order email: type is placed, cancelled, shipped, out_for_delivery or delivered
+// Order email: type is placed, new_order, cancelled, shipped, out_for_delivery or delivered
 sendMail.sendOrderMail = (data) => call('/order-mail', data);
 
 module.exports = sendMail;

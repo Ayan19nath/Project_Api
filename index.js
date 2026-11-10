@@ -8,7 +8,13 @@ const item = require('./routes/itemRouter');
 const order = require('./routes/orderRouter');
 
 const app = express();
-app.use(cors()); // must come before the routes
+
+// Only the website may call this API from a browser (set FRONTEND_URL, no trailing slash).
+// Without FRONTEND_URL every website is allowed, which is fine on your own computer.
+app.use(cors({
+    origin: process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',').map((s) => s.trim()) : true,
+    exposedHeaders: ['x-new-token'] // lets the website read the renewed login token
+}));
 app.use(express.json());
 
 const mongoURI = process.env.mongodb_URL;

@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const User = require('../models/userModel');
@@ -9,8 +10,10 @@ const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 const ownerOnly = require('../middleware/ownerOnly');
 const sendMail = require('../utils/sendMail');
+const { signToken } = require('../utils/token');
 
 const owner = [authenticate, ownerOnly];
+const googleClient = new OAuth2Client();
 const OTP_MINUTES = 10;
 const WEAK = 'Password must be at least 8 characters and include a letter, a number and a special character';
 
@@ -22,14 +25,6 @@ const strongPassword = (p) =>
 const resetSecret = () => process.env.JWT_SECRET + '-reset';
 const hashOtp = (otp) => crypto.createHash('sha256').update(otp + process.env.JWT_SECRET).digest('hex');
 
-// Login token: customers stay logged in for 7 days, admins for 1 hour
-const makeToken = (user) =>
-    jwt.sign(
-        { id: user._id, First_name: user.First_name, Last_name: user.Last_name, role: user.role, isOwner: user.isOwner },
-        process.env.JWT_SECRET, // must be the same value used in authenticate.js
-        { expiresIn: user.role === 'admin' ? '1h' : '7d' }
-    );
-
 // Customer details sent to the website (never the password)
 const profile = (u) => ({
     id: u._id,
@@ -39,9 +34,10 @@ const profile = (u) => ({
     dob: u.DOB || ''
 });
 
-// Send an email without breaking the request if the mail server is down
-const notify = (to, subject, message) =>
-    sendMail(to, subject, message).catch((err) => console.log('Mail error:', err.message));
+// Send an email. Always "await" it: on Vercel the function stops as soon as the answer is sent.
+// copy = also send a hidden copy to the official website inbox.
+const notify = (to, subject, message, copy = false) =>
+    sendMail(to, subject, message, copy).catch((err) => console.log('Mail error:', err.message));
 
 // Catches errors in async routes
 const wrap = (fn) => (req, res) =>
@@ -84,7 +80,42 @@ router.post('/login', wrap(async (req, res) => {
     if (!user || !(await user.comparePassword(String(Password)))) {
         return res.status(401).json({ message: 'Invalid email or password' });
     }
-    res.json({ message: 'Login successful', token: makeToken(user), role: user.role, isOwner: user.isOwner, user: profile(user) });
+    res.json({ message: 'Login successful', token: signToken(user), role: user.role, isOwner: user.isOwner, user: profile(user) });
+}));
+
+// ========== LOGIN WITH GOOGLE (public) ==========
+// The website sends the Google sign-in token. The account is created on the first visit.
+router.post('/google', wrap(async (req, res) => {
+    if (!process.env.GOOGLE_CLIENT_ID) return res.status(503).json({ message: 'Google login is not set up yet' });
+
+    let info;
+    try {
+        const ticket = await googleClient.verifyIdToken({
+            idToken: String(req.body.credential || ''),
+            audience: process.env.GOOGLE_CLIENT_ID
+        });
+        info = ticket.getPayload();
+    } catch {
+        return res.status(401).json({ message: 'Google sign-in failed. Please try again.' });
+    }
+    if (!info?.email || !info.email_verified) return res.status(400).json({ message: 'Your Google email is not verified' });
+
+    const email = info.email.toLowerCase();
+    let user = await User.findOne({ Email: email });
+    if (user?.role === 'admin') {
+        return res.status(403).json({ message: 'Admin accounts must log in from the Admin tab with their password.' });
+    }
+
+    if (!user) {
+        user = await User.create({
+            First_name: info.given_name || info.name,
+            Last_name: info.family_name,
+            Email: email,
+            Password: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10), // unused; "Forgot password" can set a real one
+            role: 'customer'
+        });
+    }
+    res.json({ message: 'Login successful', token: signToken(user), role: user.role, isOwner: false, user: profile(user) });
 }));
 
 // ========== MY PROFILE (logged-in user) ==========
@@ -145,7 +176,7 @@ router.post('/forgot-password', wrap(async (req, res) => {
     user.resetOtpTries = 0;
     await user.save();
 
-    notify(user.Email, 'Your HomeHub password reset code',
+    await notify(user.Email, 'Your HomeHub password reset code',
         `Your code is ${otp}. It is valid for ${OTP_MINUTES} minutes. If you did not ask for it, you can ignore this email.`);
     res.json(reply);
 }));
@@ -209,11 +240,11 @@ router.post('/admin-request', wrap(async (req, res) => {
 
     await AdminRequest.create({ First_name, Last_name, Email: email, Mobile, Password: await bcrypt.hash(Password, 10) });
 
-    // email the owner (the password is never included)
+    // email the owner, with a hidden copy to the official inbox (the password is never included)
     const boss = await User.findOne({ isOwner: true });
     if (boss) {
-        notify(boss.Email, 'New admin access request',
-            `${First_name} ${Last_name || ''} wants to become an admin.\n\nEmail: ${email}\nMobile: ${Mobile || '-'}\n\nOpen the admin dashboard and go to Admin Requests to approve or reject.`);
+        await notify(boss.Email, 'New admin access request',
+            `${First_name} ${Last_name || ''} wants to become an admin.\n\nEmail: ${email}\nMobile: ${Mobile || '-'}\n\nOpen the admin dashboard and go to Admin Requests to approve or reject.`, true);
     }
     res.status(201).json({ message: 'Request sent. You will get an email after the owner decides.' });
 }));
@@ -234,7 +265,7 @@ router.put('/admin-requests/:id/approve', owner, wrap(async (req, res) => {
     });
     await request.deleteOne();
 
-    notify(request.Email, 'Admin request approved', 'Your admin request was approved. You can now log in as Admin on the HomeHub login page.');
+    await notify(request.Email, 'Admin request approved', 'Your admin request was approved. You can now log in as Admin on the HomeHub login page.');
     res.json({ message: 'Admin approved' });
 }));
 
@@ -243,7 +274,7 @@ router.delete('/admin-requests/:id', owner, wrap(async (req, res) => {
     const request = await AdminRequest.findByIdAndDelete(req.params.id);
     if (!request) return res.status(404).json({ message: 'Request not found' });
 
-    notify(request.Email, 'Admin request rejected', 'Sorry, your admin request was not approved.');
+    await notify(request.Email, 'Admin request rejected', 'Sorry, your admin request was not approved.');
     res.json({ message: 'Request rejected' });
 }));
 
