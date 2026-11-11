@@ -25,13 +25,14 @@ const strongPassword = (p) =>
 const resetSecret = () => process.env.JWT_SECRET + '-reset';
 const hashOtp = (otp) => crypto.createHash('sha256').update(otp + process.env.JWT_SECRET).digest('hex');
 
-// Customer details sent to the website (never the password)
+// Customer details sent to the website (never the password). verified = the email code was entered.
 const profile = (u) => ({
     id: u._id,
     name: `${u.First_name || ''} ${u.Last_name || ''}`.trim(),
     email: u.Email,
     phone: u.Mobile || '',
-    dob: u.DOB || ''
+    dob: u.DOB || '',
+    verified: u.emailVerified === true
 });
 
 // Send an email. Always "await" it: on Vercel the function stops as soon as the answer is sent.
@@ -49,7 +50,7 @@ const sendVerifyCode = async (user) => {
     user.verifyOtpTries = 0;
     await user.save();
     await notify(user.Email, 'Verify your HomeHub email',
-        `Your verification code is ${otp}. It is valid for ${OTP_MINUTES} minutes. If you did not create this account, you can ignore this email.`);
+        `Your verification code is ${otp}. It is valid for ${OTP_MINUTES} minutes. If you did not ask for it, you can ignore this email.`);
 };
 
 // Catches errors in async routes
@@ -109,7 +110,7 @@ router.post('/verify-email', wrap(async (req, res) => {
 // ========== SEND A NEW VERIFICATION CODE (public, same answer for every email) ==========
 router.post('/resend-verification', wrap(async (req, res) => {
     const user = await User.findOne({ Email: clean(req.body.Email).toLowerCase() }).select('+verifyOtpExpires');
-    if (user && user.emailVerified === false) await sendVerifyCode(user);
+    if (user && user.emailVerified !== true) await sendVerifyCode(user);
     res.json({ message: 'If this email needs verification, a new code has been sent.' });
 }));
 
@@ -126,7 +127,7 @@ router.post('/login', wrap(async (req, res) => {
         return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    // email not verified yet: send a code and let the website open the code page
+    // new accounts must verify the email first (older accounts can verify later from the profile)
     if (user.emailVerified === false) {
         await sendVerifyCode(user);
         return res.status(403).json({ message: 'Please verify your email. We sent you a 6-digit code.', needsVerification: true, email: user.Email });
@@ -166,7 +167,7 @@ router.post('/google', wrap(async (req, res) => {
             role: 'customer',
             emailVerified: true // Google already verified this email
         });
-    } else if (user.emailVerified === false) {
+    } else if (user.emailVerified !== true) {
         user.emailVerified = true;
         await user.save();
     }
@@ -213,6 +214,16 @@ router.put('/me/password', authenticate, wrap(async (req, res) => {
     user.passwordChangedAt = new Date();
     await user.save();
     res.json({ message: 'Password updated' });
+}));
+
+// ========== SEND A VERIFICATION CODE TO MY OWN EMAIL (logged-in user, customer or admin) ==========
+router.post('/me/send-verification', authenticate, wrap(async (req, res) => {
+    const user = await User.findById(req.user.id).select('+verifyOtpExpires');
+    if (!user) return res.status(404).json({ message: 'Account not found' });
+    if (user.emailVerified === true) return res.json({ message: 'Your email is already verified', verified: true });
+
+    await sendVerifyCode(user);
+    res.json({ message: 'We sent a 6-digit code to your email.' });
 }));
 
 // ========== FORGOT PASSWORD, STEP 1: email a 6-digit code (public) ==========
