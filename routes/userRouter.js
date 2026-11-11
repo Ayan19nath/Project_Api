@@ -39,6 +39,19 @@ const profile = (u) => ({
 const notify = (to, subject, message, copy = false) =>
     sendMail(to, subject, message, copy).catch((err) => console.log('Mail error:', err.message));
 
+// Email a 6-digit verification code (valid 10 minutes). Skipped if one was sent less than a minute ago.
+// The user must have been loaded with select('+verifyOtpExpires').
+const sendVerifyCode = async (user) => {
+    if (user.verifyOtpExpires && user.verifyOtpExpires - Date.now() > (OTP_MINUTES - 1) * 60 * 1000) return;
+    const otp = String(crypto.randomInt(100000, 1000000));
+    user.verifyOtp = hashOtp(otp);
+    user.verifyOtpExpires = new Date(Date.now() + OTP_MINUTES * 60 * 1000);
+    user.verifyOtpTries = 0;
+    await user.save();
+    await notify(user.Email, 'Verify your HomeHub email',
+        `Your verification code is ${otp}. It is valid for ${OTP_MINUTES} minutes. If you did not create this account, you can ignore this email.`);
+};
+
 // Catches errors in async routes
 const wrap = (fn) => (req, res) =>
     fn(req, res).catch((err) => {
@@ -59,13 +72,45 @@ router.post('/', wrap(async (req, res) => {
     const email = clean(Email).toLowerCase();
     if (await User.findOne({ Email: email })) return res.status(409).json({ message: 'You are already registered' });
 
-    // only the allowed fields are taken from req.body
-    await User.create({
+    // only the allowed fields are taken from req.body; the email must be verified before login
+    const user = await User.create({
         First_name, Last_name, Email: email, Mobile, DOB,
         Password: await bcrypt.hash(Password, 10),
-        role: 'customer'
+        role: 'customer',
+        emailVerified: false
     });
-    res.status(201).json({ message: 'Registered successfully' });
+    await sendVerifyCode(user);
+    res.status(201).json({ message: 'Registered successfully', needsVerification: true });
+}));
+
+// ========== VERIFY EMAIL (public, 5 tries): checks the code from the email ==========
+router.post('/verify-email', wrap(async (req, res) => {
+    const user = await User.findOne({ Email: clean(req.body.Email).toLowerCase() })
+        .select('+verifyOtp +verifyOtpExpires +verifyOtpTries');
+    const bad = () => res.status(400).json({ message: 'Invalid or expired code. Please try again.' });
+
+    if (!user || !user.verifyOtp || user.verifyOtpExpires < Date.now() || user.verifyOtpTries >= 5) return bad();
+
+    if (user.verifyOtp !== hashOtp(clean(req.body.otp))) {
+        user.verifyOtpTries += 1;
+        await user.save();
+        return bad();
+    }
+
+    // right code: the account is verified and the code works only once
+    user.emailVerified = true;
+    user.verifyOtp = undefined;
+    user.verifyOtpExpires = undefined;
+    user.verifyOtpTries = 0;
+    await user.save();
+    res.json({ message: 'Email verified' });
+}));
+
+// ========== SEND A NEW VERIFICATION CODE (public, same answer for every email) ==========
+router.post('/resend-verification', wrap(async (req, res) => {
+    const user = await User.findOne({ Email: clean(req.body.Email).toLowerCase() }).select('+verifyOtpExpires');
+    if (user && user.emailVerified === false) await sendVerifyCode(user);
+    res.json({ message: 'If this email needs verification, a new code has been sent.' });
 }));
 
 // ========== LOGIN (customers and admins) ==========
@@ -74,11 +119,17 @@ router.post('/login', wrap(async (req, res) => {
     if (!Email || !Password) return res.status(400).json({ message: 'Email and password are required' });
 
     // select('+Password') is needed because the schema hides it by default
-    const user = await User.findOne({ Email: clean(Email).toLowerCase() }).select('+Password');
+    const user = await User.findOne({ Email: clean(Email).toLowerCase() }).select('+Password +verifyOtpExpires');
 
     // same message for both cases so nobody can find out which emails exist
     if (!user || !(await user.comparePassword(String(Password)))) {
         return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // email not verified yet: send a code and let the website open the code page
+    if (user.emailVerified === false) {
+        await sendVerifyCode(user);
+        return res.status(403).json({ message: 'Please verify your email. We sent you a 6-digit code.', needsVerification: true, email: user.Email });
     }
     res.json({ message: 'Login successful', token: signToken(user), role: user.role, isOwner: user.isOwner, user: profile(user) });
 }));
@@ -112,8 +163,12 @@ router.post('/google', wrap(async (req, res) => {
             Last_name: info.family_name,
             Email: email,
             Password: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10), // unused; "Forgot password" can set a real one
-            role: 'customer'
+            role: 'customer',
+            emailVerified: true // Google already verified this email
         });
+    } else if (user.emailVerified === false) {
+        user.emailVerified = true;
+        await user.save();
     }
     res.json({ message: 'Login successful', token: signToken(user), role: user.role, isOwner: false, user: profile(user) });
 }));
@@ -259,13 +314,14 @@ router.put('/admin-requests/:id/approve', owner, wrap(async (req, res) => {
     const request = await AdminRequest.findById(req.params.id);
     if (!request) return res.status(404).json({ message: 'Request not found' });
 
+    // the new admin verifies the email with a code at the first login
     await User.create({
         First_name: request.First_name, Last_name: request.Last_name, Email: request.Email,
-        Mobile: request.Mobile, Password: request.Password, role: 'admin'
+        Mobile: request.Mobile, Password: request.Password, role: 'admin', emailVerified: false
     });
     await request.deleteOne();
 
-    await notify(request.Email, 'Admin request approved', 'Your admin request was approved. You can now log in as Admin on the HomeHub login page.');
+    await notify(request.Email, 'Admin request approved', 'Your admin request was approved. Log in as Admin on the HomeHub login page; you will be asked to verify your email with a 6-digit code the first time.');
     res.json({ message: 'Admin approved' });
 }));
 

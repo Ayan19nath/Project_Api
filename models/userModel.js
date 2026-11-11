@@ -11,9 +11,13 @@ const userSchema = mongoose.Schema({
     role: { type: String, enum: ['customer', 'admin'], default: 'customer' },
     isOwner: { type: Boolean, default: false },                // true only for the main admin
     passwordChangedAt: Date,                                   // older reset links stop working after a change
-    resetOtp: { type: String, select: false },                 // hashed 6-digit code
+    resetOtp: { type: String, select: false },                 // hashed 6-digit code (forgot password)
     resetOtpExpires: { type: Date, select: false },
-    resetOtpTries: { type: Number, default: 0, select: false }
+    resetOtpTries: { type: Number, default: 0, select: false },
+    emailVerified: Boolean,                                    // false until the emailed code is entered (older accounts have no value and stay allowed)
+    verifyOtp: { type: String, select: false },                // hashed 6-digit code (verify email)
+    verifyOtpExpires: { type: Date, select: false },
+    verifyOtpTries: { type: Number, default: 0, select: false }
 });
 
 // Compare a typed password with the saved hash
