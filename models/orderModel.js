@@ -26,7 +26,9 @@ const orderSchema = mongoose.Schema({
     paymentMethod: String,
     notes: String,
     subtotal: Number,
-    discount: Number,
+    discount: Number,                                  // saving from the old prices of the products
+    couponCode: String,                                // coupon used on this order (if any)
+    couponDiscount: { type: Number, default: 0 },      // rupees saved with the coupon
     shipping: { type: Number, default: 0 },
     total: Number,
     status: {

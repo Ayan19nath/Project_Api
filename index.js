@@ -6,6 +6,7 @@ const category = require('./routes/categoryRouter');
 const user = require('./routes/userRouter');
 const item = require('./routes/itemRouter');
 const order = require('./routes/orderRouter');
+const coupon = require('./routes/couponRouter');
 
 const app = express();
 
@@ -51,6 +52,7 @@ app.use('/category', category);
 app.use('/user', user);
 app.use('/item', item);
 app.use('/order', order);
+app.use('/coupon', coupon);
 
 // only listen when running locally (node index.js)
 if (require.main === module) {

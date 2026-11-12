@@ -5,6 +5,7 @@ const Order = require('../models/orderModel');
 const Item = require('../models/itemModel');
 const User = require('../models/userModel');
 const sendMail = require('../utils/sendMail');
+const { checkCoupon, claimCoupon, releaseCoupon } = require('../utils/coupon');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 
@@ -39,6 +40,8 @@ const toClient = (order) => {
         notes: o.notes,
         subtotal: o.subtotal,
         discount: o.discount,
+        couponCode: o.couponCode,
+        couponDiscount: o.couponDiscount,
         shipping: o.shipping,
         total: o.total,
         cancellationReason: o.cancellationReason,
@@ -75,10 +78,29 @@ const emailCustomer = async (order, type) => {
     }
 };
 
+// Email the head admin (owner) about a new order, with a hidden copy to the official inbox
+const emailOwner = async (order) => {
+    try {
+        const [boss, buyer] = await Promise.all([User.findOne({ isOwner: true }), User.findById(order.user)]);
+        if (!boss) return;
+        const a = order.address;
+        const lines = order.items.map((i) => `- ${i.name} x ${i.quantity} = ₹${i.price * i.quantity}`).join('\n');
+        const coupon = order.couponCode ? `Coupon: ${order.couponCode} (-₹${order.couponDiscount})\n` : '';
+        await sendMail(
+            boss.Email,
+            `New order ${order.orderId}`,
+            `A new order was placed.\n\nOrder: ${order.orderId}\nCustomer: ${buyer?.First_name || ''} ${buyer?.Last_name || ''} (${buyer?.Email || '-'}, ${a.phone})\nPayment: ${order.paymentMethod}\n${coupon}Total: ₹${order.total}\n\nItems:\n${lines}\n\nDeliver to: ${[a.name, a.address, a.city, a.state, a.pincode, a.country].filter(Boolean).join(', ')}\n\nOpen the admin dashboard to manage this order.`,
+            true
+        );
+    } catch (err) {
+        console.log('Owner mail error:', err.message);
+    }
+};
+
 const clean = (value, max = 200) => String(value || '').trim().slice(0, max);
 
 // ========== PLACE ORDER (logged-in customer) ==========
-// The website sends only product ids and quantities. Prices and stock come from the database.
+// The website sends only product ids, quantities and the coupon code. Prices, stock and the discount come from the database.
 router.post('/', authenticate, wrap(async (req, res) => {
     const { items, address, paymentMethod, notes } = req.body;
 
@@ -118,6 +140,20 @@ router.post('/', authenticate, wrap(async (req, res) => {
         quantity: wanted.get(String(p._id))
     }));
 
+    const subtotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
+    const discount = lines.reduce((sum, l) => sum + Math.max(0, (l.oldPrice || 0) - l.price) * l.quantity, 0);
+
+    // Coupon: checked here on the server, so a discount cannot be faked
+    let coupon = null;
+    let couponDiscount = 0;
+    if (clean(req.body.couponCode)) {
+        try {
+            ({ coupon, amount: couponDiscount } = await checkCoupon(req.body.couponCode, req.user.id, subtotal));
+        } catch (err) {
+            return res.status(400).json({ message: err.message });
+        }
+    }
+
     // Take the stock (one product at a time; undo everything if one is short)
     const reserved = [];
     for (const line of lines) {
@@ -132,8 +168,11 @@ router.post('/', authenticate, wrap(async (req, res) => {
         reserved.push(line);
     }
 
-    const subtotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
-    const discount = lines.reduce((sum, l) => sum + Math.max(0, (l.oldPrice || 0) - l.price) * l.quantity, 0);
+    // Take the coupon (only one request can win the last use)
+    if (coupon && !(await claimCoupon(coupon, req.user.id))) {
+        await restoreStock(reserved);
+        return res.status(400).json({ message: 'This coupon is no longer available' });
+    }
 
     try {
         const order = await Order.create({
@@ -145,13 +184,17 @@ router.post('/', authenticate, wrap(async (req, res) => {
             notes: clean(notes),
             subtotal,
             discount,
-            total: subtotal,
+            couponCode: coupon?.code,
+            couponDiscount,
+            total: subtotal - couponDiscount,
             history: [{ status: 'Processing' }]
         });
-        await emailCustomer(order, 'placed');
+        // customer confirmation and owner alert are sent together (so the request stays fast)
+        await Promise.all([emailCustomer(order, 'placed'), emailOwner(order)]);
         res.status(201).json(toClient(order));
     } catch (err) {
         await restoreStock(lines);
+        if (coupon) await releaseCoupon(coupon.code, req.user.id);
         res.status(400).json({ message: err.message });
     }
 }));
@@ -193,6 +236,7 @@ router.put('/:id/cancel', authenticate, wrap(async (req, res) => {
     order.refundStatus = order.paymentMethod === 'Cash on Delivery' ? 'Not required' : 'Processing';
     await order.save();
     await restoreStock(order.items.map(({ product, quantity }) => ({ product, quantity })));
+    if (order.couponCode) await releaseCoupon(order.couponCode, order.user); // the customer can use the coupon again
     await emailCustomer(order, 'cancelled');
     res.json(toClient(order));
 }));
