@@ -37,6 +37,8 @@ const orderSchema = mongoose.Schema({
         default: 'Processing'
     },
     history: [historySchema],
+    deliveryOtp: { type: String, select: false },      // 6-digit code the customer gives to the delivery person
+    deliveryOtpTries: { type: Number, default: 0, select: false }, // wrong codes typed so far
     cancellationReason: String,
     cancelledAt: Date,
     refundStatus: String,

@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const router = express.Router();
 const Order = require('../models/orderModel');
@@ -13,6 +14,7 @@ const admin = [authenticate, authorize('admin')];
 
 const PAYMENTS = ['Cash on Delivery', 'UPI', 'Credit / Debit Card'];
 const ADDRESS_FIELDS = ['name', 'phone', 'address', 'city', 'state', 'pincode', 'country'];
+const ACTIVE = ['Processing', 'Shipped', 'Out for Delivery']; // the delivery code is shown only until the order is finished
 
 // The admin can only move an order one step forward: current status -> [next status, email type]
 const NEXT = {
@@ -25,8 +27,8 @@ const NEXT = {
 const wrap = (fn) => (req, res) =>
     fn(req, res).catch((err) => res.status(err.name === 'CastError' ? 400 : 500).json({ message: err.message }));
 
-// Shape of an order sent to the website
-const toClient = (order) => {
+// Shape of an order sent to the website. withOtp = also send the delivery code (only to the customer who owns the order).
+const toClient = (order, withOtp = false) => {
     const o = order.toObject();
     const u = o.user && o.user.Email ? o.user : null; // only present when the customer was loaded (admin list)
     return {
@@ -44,6 +46,7 @@ const toClient = (order) => {
         couponDiscount: o.couponDiscount,
         shipping: o.shipping,
         total: o.total,
+        deliveryOtp: withOtp && ACTIVE.includes(o.status) ? o.deliveryOtp : undefined,
         cancellationReason: o.cancellationReason,
         cancelledAt: o.cancelledAt,
         refundStatus: o.refundStatus,
@@ -70,6 +73,7 @@ const emailCustomer = async (order, type) => {
             total: order.total,
             payment: order.paymentMethod,
             reason: order.cancellationReason,
+            deliveryOtp: order.deliveryOtp, // shown only in the "placed" and "out for delivery" emails
             address: [a.address, a.city, a.state, a.pincode, a.country].filter(Boolean).join(', '),
             items: order.items.map(({ name, quantity, price }) => ({ name, quantity, price }))
         });
@@ -187,11 +191,12 @@ router.post('/', authenticate, wrap(async (req, res) => {
             couponCode: coupon?.code,
             couponDiscount,
             total: subtotal - couponDiscount,
+            deliveryOtp: String(crypto.randomInt(100000, 1000000)), // the customer gives this code to the delivery person
             history: [{ status: 'Processing' }]
         });
         // customer confirmation and owner alert are sent together (so the request stays fast)
         await Promise.all([emailCustomer(order, 'placed'), emailOwner(order)]);
-        res.status(201).json(toClient(order));
+        res.status(201).json(toClient(order, true));
     } catch (err) {
         await restoreStock(lines);
         if (coupon) await releaseCoupon(coupon.code, req.user.id);
@@ -199,10 +204,12 @@ router.post('/', authenticate, wrap(async (req, res) => {
     }
 }));
 
-// ========== MY ORDERS (logged-in customer) ==========
+// ========== MY ORDERS (logged-in customer, with the delivery codes) ==========
 router.get('/mine', authenticate, wrap(async (req, res) => {
-    const orders = await Order.find({ user: req.user.id, hiddenByCustomer: { $ne: true } }).sort('-createdAt');
-    res.json(orders.map((o) => toClient(o)));
+    const orders = await Order.find({ user: req.user.id, hiddenByCustomer: { $ne: true } })
+        .select('+deliveryOtp')
+        .sort('-createdAt');
+    res.json(orders.map((o) => toClient(o, true)));
 }));
 
 // ========== TRACK ONE ORDER by order number (the customer's own, or any for an admin) ==========
@@ -210,11 +217,13 @@ router.get('/track/:ref', authenticate, wrap(async (req, res) => {
     const ref = req.params.ref.replace(/^#/, '');
     const order = await Order.findOne({
         $or: [{ orderId: ref }, ...(mongoose.isValidObjectId(ref) ? [{ _id: ref }] : [])]
-    });
-    if (!order || (String(order.user) !== req.user.id && req.user.role !== 'admin')) {
+    }).select('+deliveryOtp');
+
+    const mine = order && String(order.user) === req.user.id;
+    if (!order || (!mine && req.user.role !== 'admin')) {
         return res.status(404).json({ message: 'Order not found' });
     }
-    res.json(toClient(order));
+    res.json(toClient(order, mine)); // the code goes only to the customer who owns the order
 }));
 
 // ========== CANCEL ORDER (the customer, only while Processing) ==========
@@ -251,7 +260,7 @@ router.delete('/:id', authenticate, wrap(async (req, res) => {
     res.json({ message: 'Order removed from your history' });
 }));
 
-// ========== ALL ORDERS (admin only) ==========
+// ========== ALL ORDERS (admin only, never with the delivery codes) ==========
 router.get('/', admin, wrap(async (req, res) => {
     const orders = await Order.find().populate('user', 'First_name Last_name Email Mobile').sort('-createdAt');
     res.json(orders.map((o) => toClient(o)));
@@ -260,7 +269,7 @@ router.get('/', admin, wrap(async (req, res) => {
 // ========== CHANGE STATUS (admin only) ==========
 // Shipped -> Out for Delivery -> Delivered, and the customer gets an email each time
 router.put('/:id/status', admin, wrap(async (req, res) => {
-    const order = await Order.findById(req.params.id);
+    const order = await Order.findById(req.params.id).select('+deliveryOtp +deliveryOtpTries');
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
     const step = NEXT[order.status];
@@ -272,11 +281,22 @@ router.put('/:id/status', admin, wrap(async (req, res) => {
         });
     }
 
+    // Delivered needs the customer's delivery code (older orders have none; the owner can skip it)
+    if (step[0] === 'Delivered' && order.deliveryOtp && !(req.user.isOwner && req.body.skipOtp === true)) {
+        if (order.deliveryOtpTries >= 5) {
+            return res.status(400).json({ message: 'Too many wrong codes. Ask the owner to deliver this order.' });
+        }
+        if (clean(req.body.otp) !== order.deliveryOtp) {
+            await Order.updateOne({ _id: order._id }, { $inc: { deliveryOtpTries: 1 } });
+            return res.status(400).json({ message: 'Wrong delivery code. Ask the customer for the 6-digit code.' });
+        }
+    }
+
     const updated = await Order.findOneAndUpdate(
         { _id: order._id, status: order.status },
         { $set: { status: step[0] }, $push: { history: { status: step[0] } } },
         { new: true }
-    ).populate('user', 'First_name Last_name Email Mobile');
+    ).select('+deliveryOtp').populate('user', 'First_name Last_name Email Mobile');
     if (!updated) return res.status(409).json({ message: 'This order was just changed. Please refresh.' });
 
     await emailCustomer(updated, step[1]);
