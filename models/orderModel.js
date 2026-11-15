@@ -23,7 +23,15 @@ const orderSchema = mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     items: [lineSchema],
     address: { name: String, phone: String, address: String, city: String, state: String, pincode: String, country: String },
+
+    // payment: Cash on Delivery or Online Payment (Razorpay)
     paymentMethod: String,
+    paymentStatus: { type: String, enum: ['Pay on delivery', 'Pending', 'Paid'], default: 'Pay on delivery' },
+    paymentDeadline: Date,                             // an online order must be paid before this time
+    razorpayOrderId: String,                           // Razorpay's order for this payment
+    razorpayPaymentId: String,                         // Razorpay's payment id (needed for refunds)
+    paidAt: Date,
+
     notes: String,
     subtotal: Number,
     discount: Number,                                  // saving from the old prices of the products
@@ -33,7 +41,7 @@ const orderSchema = mongoose.Schema({
     total: Number,
     status: {
         type: String,
-        enum: ['Processing', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled'],
+        enum: ['Awaiting Payment', 'Processing', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled'],
         default: 'Processing'
     },
     history: [historySchema],
@@ -41,7 +49,8 @@ const orderSchema = mongoose.Schema({
     deliveryOtpTries: { type: Number, default: 0, select: false }, // wrong codes typed so far
     cancellationReason: String,
     cancelledAt: Date,
-    refundStatus: String,
+    refundStatus: String,                              // Not required, Refund initiated, Refunded or Refund failed
+    refundId: String,
     hiddenByCustomer: { type: Boolean, default: false } // "Delete order" in the customer's history
 }, { timestamps: true });
 
