@@ -16,6 +16,9 @@ app.use(cors({
     origin: process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',').map((s) => s.trim()) : true,
     exposedHeaders: ['x-new-token'] // lets the website read the renewed login token
 }));
+
+// The Razorpay webhook needs the raw request text to check its signature (must come before express.json)
+app.use('/order/webhook', express.raw({ type: '*/*', limit: '1mb' }));
 app.use(express.json());
 
 const mongoURI = process.env.mongodb_URL;
