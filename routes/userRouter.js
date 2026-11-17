@@ -417,15 +417,17 @@ router.put('/:id', authenticate, wrap(async (req, res) => {
 }));
 
 // ========== DELETE A USER (admin only) ==========
+// Customers: any admin. Admins: the owner or an admin manager. The owner: nobody. Your own account: nobody.
 router.delete('/:id', authenticate, authorize('admin'), wrap(async (req, res) => {
     const [me, target] = await Promise.all([User.findById(req.user.id), User.findById(req.params.id)]);
     if (!me || me.role !== 'admin') return res.status(403).json({ message: 'Access denied' });
     if (!target) return res.status(404).json({ message: 'User not found' });
-    if (target.isOwner) return res.status(403).json({ message: 'The owner account cannot be deleted' });
 
-    // an admin is removed by the owner, or by an admin manager (never another manager, never himself)
-    const allowed = me.isOwner || (me.canManageAdmins && !target.canManageAdmins && String(target._id) !== String(me._id));
-    if (target.role === 'admin' && !allowed) return res.status(403).json({ message: 'Only the owner can remove this admin' });
+    if (target.isOwner) return res.status(403).json({ message: 'The owner account cannot be deleted' });
+    if (String(target._id) === String(me._id)) return res.status(403).json({ message: 'You cannot delete your own account here' });
+    if (target.role === 'admin' && !(me.isOwner || me.canManageAdmins)) {
+        return res.status(403).json({ message: 'You do not have the power to remove admins' });
+    }
 
     await target.deleteOne();
     if (target.role === 'admin') await tellOwner(me, `removed the admin ${target.Email}.`);
