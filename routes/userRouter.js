@@ -17,6 +17,22 @@ const googleClient = new OAuth2Client();
 const OTP_MINUTES = 10;
 const WEAK = 'Password must be at least 8 characters and include a letter, a number and a special character';
 
+// The owner, or an admin the owner gave the "manage admins" power. Checked in the database,
+// so a power that was taken back stops working at once.
+const canManage = async (req, res, next) => {
+    try {
+        const me = await User.findById(req.user.id);
+        if (!me || me.role !== 'admin' || !(me.isOwner || me.canManageAdmins)) {
+            return res.status(403).json({ message: 'You do not have the power to manage admins' });
+        }
+        req.me = me;
+        next();
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+};
+const manager = [authenticate, authorize('admin'), canManage];
+
 // Same password rule as the website
 const strongPassword = (p) =>
     typeof p === 'string' && p.length >= 8 && /[A-Za-z]/.test(p) && /\d/.test(p) && /[^A-Za-z0-9]/.test(p);
@@ -32,13 +48,21 @@ const profile = (u) => ({
     email: u.Email,
     phone: u.Mobile || '',
     dob: u.DOB || '',
-    verified: u.emailVerified === true
+    verified: u.emailVerified === true,
+    canManageAdmins: u.canManageAdmins === true
 });
 
 // Send an email. Always "await" it: on Vercel the function stops as soon as the answer is sent.
 // copy = also send a hidden copy to the official website inbox.
 const notify = (to, subject, message, copy = false) =>
     sendMail(to, subject, message, copy).catch((err) => console.log('Mail error:', err.message));
+
+// Tell the owner when another admin makes or removes an admin (hidden copy to the official inbox)
+const tellOwner = async (me, text) => {
+    if (me.isOwner) return;
+    const boss = await User.findOne({ isOwner: true });
+    if (boss) await notify(boss.Email, 'Admin change', `${me.First_name || ''} ${me.Last_name || ''} (${me.Email}) ${text}`, true);
+};
 
 // Email a 6-digit verification code (valid 10 minutes). Skipped if one was sent less than a minute ago.
 // The user must have been loaded with select('+verifyOtpExpires').
@@ -292,7 +316,7 @@ router.post('/reset-password', wrap(async (req, res) => {
     res.json({ message: 'Password reset successfully' });
 }));
 
-// ========== ADMIN REQUEST (public): saves a pending request and emails the owner ==========
+// ========== ADMIN REQUEST (public): saves a pending request and emails the owner and the admin managers ==========
 router.post('/admin-request', wrap(async (req, res) => {
     const { First_name, Last_name, Email, Password, Mobile } = req.body;
     if (!First_name || !Email || !Password) {
@@ -306,22 +330,21 @@ router.post('/admin-request', wrap(async (req, res) => {
 
     await AdminRequest.create({ First_name, Last_name, Email: email, Mobile, Password: await bcrypt.hash(Password, 10) });
 
-    // email the owner, with a hidden copy to the official inbox (the password is never included)
-    const boss = await User.findOne({ isOwner: true });
-    if (boss) {
-        await notify(boss.Email, 'New admin access request',
-            `${First_name} ${Last_name || ''} wants to become an admin.\n\nEmail: ${email}\nMobile: ${Mobile || '-'}\n\nOpen the admin dashboard and go to Admin Requests to approve or reject.`, true);
-    }
+    // email the owner and every admin who may manage admins (the password is never included).
+    // Only the first mail (the owner's) gets a hidden copy in the official inbox.
+    const managers = await User.find({ $or: [{ isOwner: true }, { role: 'admin', canManageAdmins: true }] }).sort({ isOwner: -1 });
+    await Promise.all(managers.map((m, i) => notify(m.Email, 'New admin access request',
+        `${First_name} ${Last_name || ''} wants to become an admin.\n\nEmail: ${email}\nMobile: ${Mobile || '-'}\n\nOpen the admin dashboard and go to Admin Requests to approve or reject.`, i === 0)));
     res.status(201).json({ message: 'Request sent. You will get an email after the owner decides.' });
 }));
 
-// ========== LIST PENDING REQUESTS (owner only) ==========
-router.get('/admin-requests', owner, wrap(async (req, res) => {
+// ========== LIST PENDING REQUESTS (owner or admin manager) ==========
+router.get('/admin-requests', manager, wrap(async (req, res) => {
     res.json(await AdminRequest.find().select('-Password').sort({ createdAt: -1 }));
 }));
 
-// ========== APPROVE REQUEST (owner only): creates the admin and removes the request ==========
-router.put('/admin-requests/:id/approve', owner, wrap(async (req, res) => {
+// ========== APPROVE REQUEST (owner or admin manager): creates the admin and removes the request ==========
+router.put('/admin-requests/:id/approve', manager, wrap(async (req, res) => {
     const request = await AdminRequest.findById(req.params.id);
     if (!request) return res.status(404).json({ message: 'Request not found' });
 
@@ -333,16 +356,34 @@ router.put('/admin-requests/:id/approve', owner, wrap(async (req, res) => {
     await request.deleteOne();
 
     await notify(request.Email, 'Admin request approved', 'Your admin request was approved. Log in as Admin on the HomeHub login page; you will be asked to verify your email with a 6-digit code the first time.');
+    await tellOwner(req.me, `approved ${request.Email} as an admin.`);
     res.json({ message: 'Admin approved' });
 }));
 
-// ========== REJECT REQUEST (owner only) ==========
-router.delete('/admin-requests/:id', owner, wrap(async (req, res) => {
+// ========== REJECT REQUEST (owner or admin manager) ==========
+router.delete('/admin-requests/:id', manager, wrap(async (req, res) => {
     const request = await AdminRequest.findByIdAndDelete(req.params.id);
     if (!request) return res.status(404).json({ message: 'Request not found' });
 
     await notify(request.Email, 'Admin request rejected', 'Sorry, your admin request was not approved.');
+    await tellOwner(req.me, `rejected the admin request of ${request.Email}.`);
     res.json({ message: 'Request rejected' });
+}));
+
+// ========== GIVE OR TAKE BACK THE POWER TO MANAGE ADMINS (owner only) ==========
+router.put('/:id/manage-admins', owner, wrap(async (req, res) => {
+    const target = await User.findById(req.params.id);
+    if (!target || target.role !== 'admin' || target.isOwner) {
+        return res.status(400).json({ message: 'Only another admin can get this power' });
+    }
+
+    target.canManageAdmins = req.body.allow === true;
+    await target.save();
+
+    await notify(target.Email, 'Your admin permissions changed', target.canManageAdmins
+        ? 'The owner gave you the power to approve admin requests and remove other admins. Use it carefully.'
+        : 'The owner took back your power to approve admin requests and remove other admins.', true);
+    res.json({ canManageAdmins: target.canManageAdmins });
 }));
 
 // ========== GET ALL USERS (admin only) ==========
@@ -365,8 +406,11 @@ router.put('/:id', authenticate, wrap(async (req, res) => {
 
     // only these fields can be changed here (passwords use /user/me/password)
     ['First_name', 'Last_name', 'Mobile', 'DOB'].forEach((f) => req.body[f] !== undefined && (target[f] = req.body[f]));
-    // only the owner can change a role
-    if (req.user.isOwner && !target.isOwner && ['customer', 'admin'].includes(req.body.role)) target.role = req.body.role;
+    // only the owner can change a role (someone who is no longer an admin loses the manage power too)
+    if (req.user.isOwner && !target.isOwner && ['customer', 'admin'].includes(req.body.role)) {
+        target.role = req.body.role;
+        if (target.role !== 'admin') target.canManageAdmins = false;
+    }
 
     await target.save();
     res.json(profile(target));
@@ -374,13 +418,17 @@ router.put('/:id', authenticate, wrap(async (req, res) => {
 
 // ========== DELETE A USER (admin only) ==========
 router.delete('/:id', authenticate, authorize('admin'), wrap(async (req, res) => {
-    const target = await User.findById(req.params.id);
+    const [me, target] = await Promise.all([User.findById(req.user.id), User.findById(req.params.id)]);
+    if (!me || me.role !== 'admin') return res.status(403).json({ message: 'Access denied' });
     if (!target) return res.status(404).json({ message: 'User not found' });
-
     if (target.isOwner) return res.status(403).json({ message: 'The owner account cannot be deleted' });
-    if (target.role === 'admin' && !req.user.isOwner) return res.status(403).json({ message: 'Only the owner can remove an admin' });
+
+    // an admin is removed by the owner, or by an admin manager (never another manager, never himself)
+    const allowed = me.isOwner || (me.canManageAdmins && !target.canManageAdmins && String(target._id) !== String(me._id));
+    if (target.role === 'admin' && !allowed) return res.status(403).json({ message: 'Only the owner can remove this admin' });
 
     await target.deleteOne();
+    if (target.role === 'admin') await tellOwner(me, `removed the admin ${target.Email}.`);
     res.json({ message: 'User deleted successfully' });
 }));
 

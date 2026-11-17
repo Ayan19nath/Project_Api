@@ -10,6 +10,7 @@ const userSchema = mongoose.Schema({
     DOB: { type: String, trim: true },                         // date of birth, YYYY-MM-DD
     role: { type: String, enum: ['customer', 'admin'], default: 'customer' },
     isOwner: { type: Boolean, default: false },                // true only for the main admin
+    canManageAdmins: { type: Boolean, default: false },        // an admin the owner trusts to approve and remove admins
     passwordChangedAt: Date,                                   // older reset links stop working after a change
     resetOtp: { type: String, select: false },                 // hashed 6-digit code (forgot password)
     resetOtpExpires: { type: Date, select: false },
