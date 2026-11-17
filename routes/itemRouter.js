@@ -12,6 +12,16 @@ const admin = [authenticate, authorize('admin')];
 // Four image slots: Front, Back, Side, Detail
 const imageFields = upload.fields([0, 1, 2, 3].map((i) => ({ name: `image${i}`, maxCount: 1 })));
 
+// Cloudinary sends a smaller picture in the best format (much faster pages)
+const sized = (url, width) => String(url || '').replace('/upload/', `/upload/f_auto,q_auto,w_${width}/`);
+
+// The public product list may be kept for a minute (faster pages). Logged-in users and admins always get fresh data.
+const cacheable = (req, res, next) => {
+    res.set('Vary', 'Authorization');
+    res.set('Cache-Control', req.header('Authorization') ? 'private, no-store' : 'public, s-maxage=60, stale-while-revalidate=300');
+    next();
+};
+
 // Shape of a product sent to the website
 const toClient = (item) => {
     const o = item.toObject();
@@ -30,8 +40,8 @@ const toClient = (item) => {
         reviews: o.reviews,
         stock: o.stock,
         features: o.features,
-        images: o.images.map((img) => img.url),
-        image: o.images[0]?.url || ''
+        images: o.images.map((img) => sized(img.url, 1000)),
+        image: sized(o.images[0]?.url, 600)
     };
 };
 
@@ -83,7 +93,7 @@ async function applyImages(req, current = []) {
 }
 
 // ========== GET ALL PRODUCTS (public) ==========
-router.get('/', async (req, res) => {
+router.get('/', cacheable, async (req, res) => {
     try {
         const items = await Item.find().populate('category').sort('_id');
         res.json(items.map((item) => toClient(item)));
@@ -93,7 +103,7 @@ router.get('/', async (req, res) => {
 });
 
 // ========== GET ONE PRODUCT (public) ==========
-router.get('/:id', async (req, res) => {
+router.get('/:id', cacheable, async (req, res) => {
     try {
         const item = await Item.findById(req.params.id).populate('category');
         if (!item) return res.status(404).json({ message: 'Product not found' });
